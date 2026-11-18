@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>이미지 테두리·음영 도구</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: "Segoe UI", "Malgun Gothic", sans-serif;
+      color: #202124;
+      background: #f4f6f8;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      padding: 28px 16px;
+    }
+
+    main {
+      width: min(880px, 100%);
+      margin: 0 auto;
+      padding: 24px;
+      border: 1px solid #e1e5e9;
+      border-radius: 12px;
+      background: #fff;
+      box-shadow: 0 4px 18px #17212b0d;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 1.5rem;
+    }
+
+    p {
+      margin: 0 0 20px;
+      color: #5f6368;
+      line-height: 1.5;
+    }
+
+    .drop-zone {
+      display: grid;
+      min-height: 130px;
+      place-content: center;
+      gap: 8px;
+      padding: 20px;
+      border: 2px dashed #c7cdd3;
+      border-radius: 10px;
+      text-align: center;
+      color: #5f6368;
+      transition: border-color 120ms ease, background 120ms ease;
+    }
+
+    .drop-zone.active {
+      border-color: #1769aa;
+      background: #f1f8fe;
+    }
+
+    input[type="file"] {
+      display: none;
+    }
+
+    button,
+    .file-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 40px;
+      padding: 8px 14px;
+      border: 1px solid #1769aa;
+      border-radius: 7px;
+      background: #1769aa;
+      color: #fff;
+      font: inherit;
+      font-weight: 600;
+      text-decoration: none;
+      cursor: pointer;
+    }
+
+    button:disabled {
+      border-color: #b7c0c8;
+      background: #b7c0c8;
+      cursor: not-allowed;
+    }
+
+    .controls {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px 24px;
+      margin: 22px 0;
+    }
+
+    .control {
+      display: grid;
+      gap: 8px;
+    }
+
+    .control label,
+    .color-row {
+      font-size: 0.95rem;
+      font-weight: 600;
+    }
+
+    .value {
+      float: right;
+      color: #5f6368;
+      font-weight: 400;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: #1769aa;
+    }
+
+    .color-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    input[type="color"] {
+      width: 42px;
+      height: 34px;
+      padding: 2px;
+      border: 1px solid #c7cdd3;
+      border-radius: 6px;
+      background: #fff;
+    }
+
+    .color-row label {
+      font-weight: 400;
+    }
+
+    .preview-header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      margin: 18px 0 10px;
+    }
+
+    .preview-header h2 {
+      margin: 0;
+      font-size: 1.05rem;
+    }
+
+    #imageInfo,
+    #status {
+      color: #5f6368;
+      font-size: 0.9rem;
+    }
+
+    .preview {
+      display: grid;
+      min-height: 180px;
+      place-items: center;
+      overflow: auto;
+      padding: 20px;
+      border: 1px solid #e1e5e9;
+      border-radius: 8px;
+      background-color: #fff;
+      background-image: linear-gradient(45deg, #f0f0f0 25%, transparent 25%),
+        linear-gradient(-45deg, #f0f0f0 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, #f0f0f0 75%),
+        linear-gradient(-45deg, transparent 75%, #f0f0f0 75%);
+      background-size: 20px 20px;
+      background-position: 0 0, 0 10px, 10px -10px, -10px 0;
+    }
+
+    canvas {
+      display: block;
+      max-width: 100%;
+      height: auto;
+    }
+
+    .actions {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-top: 16px;
+    }
+
+    #status {
+      margin: 0;
+    }
+
+    @media (max-width: 620px) {
+      main {
+        padding: 18px;
+      }
+
+      .controls {
+        grid-template-columns: 1fr;
+      }
+
+      .preview-header {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>이미지 테두리·음영 도구</h1>
+    <p>이미지를 불러와 테두리와 그림자를 더한 새 PNG 파일로 저장합니다. 이미지의 가장자리 색을 테두리 색으로 자동 추출할 수 있습니다.</p>
+
+    <div class="drop-zone" id="dropZone">
+      <span>이미지를 여기에 끌어다 놓거나</span>
+      <span>
+        <label class="file-button" for="fileInput">이미지 선택</label>
+        <input id="fileInput" type="file" accept="image/*">
+      </span>
+    </div>
+
+    <section class="controls" aria-label="테두리와 음영 설정">
+      <div class="control">
+        <label for="borderWidth">테두리 두께 <span class="value" id="borderWidthValue"></span></label>
+        <input id="borderWidth" type="range" min="0" max="40" value="4">
+      </div>
+      <div class="control">
+        <label for="shadowBlur">음영 흐림 <span class="value" id="shadowBlurValue"></span></label>
+        <input id="shadowBlur" type="range" min="0" max="60" value="18">
+      </div>
+      <div class="control">
+        <label for="shadowOffset">음영 거리 <span class="value" id="shadowOffsetValue"></span></label>
+        <input id="shadowOffset" type="range" min="0" max="30" value="8">
+      </div>
+      <div class="control">
+        <label for="shadowOpacity">음영 진하기 <span class="value" id="shadowOpacityValue"></span></label>
+        <input id="shadowOpacity" type="range" min="0" max="80" value="25">
+      </div>
+      <div class="control">
+        <span class="color-row">
+          <input id="borderColor" type="color" value="#777777" aria-label="테두리 색상">
+          <label for="borderColor">테두리 색상</label>
+          <label><input id="autoColor" type="checkbox" checked> 색상 자동 추출</label>
+        </span>
+      </div>
+      <div class="control">
+        <span class="color-row">
+          <input id="shadowColor" type="color" value="#333333" aria-label="음영 색상">
+          <label for="shadowColor">음영 색상</label>
+          <label><input id="autoShadowColor" type="checkbox" checked> 테두리 대비색 자동</label>
+        </span>
+      </div>
+    </section>
+
+    <div class="preview-header">
+      <h2>미리보기</h2>
+      <span id="imageInfo">이미지를 선택해 주세요.</span>
+    </div>
+    <div class="preview">
+      <canvas id="outputCanvas" aria-label="테두리와 음영이 적용된 이미지 미리보기"></canvas>
+    </div>
+    <div class="actions">
+      <button id="downloadButton" type="button" disabled>PNG로 저장</button>
+      <p id="status" role="status" aria-live="polite"></p>
+    </div>
+  </main>
+
+  <script>
+    const fileInput = document.getElementById("fileInput");
+    const dropZone = document.getElementById("dropZone");
+    const outputCanvas = document.getElementById("outputCanvas");
+    const context = outputCanvas.getContext("2d");
+    const downloadButton = document.getElementById("downloadButton");
+    const imageInfo = document.getElementById("imageInfo");
+    const status = document.getElementById("status");
+    const borderColor = document.getElementById("borderColor");
+    const shadowColor = document.getElementById("shadowColor");
+    const autoColor = document.getElementById("autoColor");
+    const autoShadowColor = document.getElementById("autoShadowColor");
+    const settings = [
+      ["borderWidth", "borderWidthValue", "px"],
+      ["shadowBlur", "shadowBlurValue", "px"],
+      ["shadowOffset", "shadowOffsetValue", "px"],
+      ["shadowOpacity", "shadowOpacityValue", "%"]
+    ];
+    let sourceImage = null;
+    let sourceName = "image";
+    let extractedColor = "#777777";
+
+    function contrastingColor(color) {
+      const channels = color.match(/[0-9a-f]{2}/gi).map(value => parseInt(value, 16) / 255);
+      const luminance = channels
+        .map(value => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4)
+        .reduce((sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index], 0);
+      return luminance < 0.18 ? "#f2f2f2" : "#202020";
+    }
+
+    function averageEdgeColor(image) {
+      const sampleCanvas = document.createElement("canvas");
+      const sampleContext = sampleCanvas.getContext("2d", { willReadFrequently: true });
+      const scale = Math.min(1, 128 / Math.max(image.naturalWidth, image.naturalHeight));
+      sampleCanvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+      sampleCanvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+      sampleContext.drawImage(image, 0, 0, sampleCanvas.width, sampleCanvas.height);
+
+      const { width, height } = sampleCanvas;
+      const pixels = sampleContext.getImageData(0, 0, width, height).data;
+      const sum = [0, 0, 0];
+      let count = 0;
+      const band = Math.max(1, Math.round(Math.min(width, height) * 0.04));
+
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          if (x >= band && x < width - band && y >= band && y < height - band) continue;
+          const index = (y * width + x) * 4;
+          if (pixels[index + 3] < 32) continue;
+          sum[0] += pixels[index];
+          sum[1] += pixels[index + 1];
+          sum[2] += pixels[index + 2];
+          count++;
+        }
+      }
+
+      if (!count) return "#777777";
+      return "#" + sum.map(value => Math.round(value / count).toString(16).padStart(2, "0")).join("");
+    }
+
+    function render() {
+      if (!sourceImage) return;
+      const border = Number(document.getElementById("borderWidth").value);
+      const blur = Number(document.getElementById("shadowBlur").value);
+      const offset = Number(document.getElementById("shadowOffset").value);
+      const opacity = Number(document.getElementById("shadowOpacity").value) / 100;
+      const shadowPadding = blur + 2;
+      const padding = shadowPadding + border;
+      const width = Math.ceil(sourceImage.naturalWidth + padding * 2);
+      const height = Math.ceil(sourceImage.naturalHeight + padding * 2 + offset);
+
+      if (width > 16384 || height > 16384 || width * height > 100000000) {
+        status.textContent = "이미지가 너무 커서 처리할 수 없습니다. 크기를 줄인 뒤 다시 시도해 주세요.";
+        downloadButton.disabled = true;
+        return;
+      }
+
+      outputCanvas.width = width;
+      outputCanvas.height = height;
+      context.clearRect(0, 0, width, height);
+
+      const x = padding;
+      const y = padding;
+      context.save();
+      context.shadowColor = `rgba(${shadowColor.value.match(/[0-9a-f]{2}/gi).map(value => parseInt(value, 16)).join(", ")}, ${opacity})`;
+      context.shadowBlur = blur;
+      context.shadowOffsetX = 0;
+      context.shadowOffsetY = offset;
+      context.drawImage(sourceImage, x, y);
+      context.restore();
+
+      if (border > 0) {
+        context.strokeStyle = borderColor.value;
+        context.lineWidth = border;
+        context.strokeRect(x, y, sourceImage.naturalWidth, sourceImage.naturalHeight);
+      }
+
+      imageInfo.textContent = `${sourceImage.naturalWidth} × ${sourceImage.naturalHeight}px → ${width} × ${height}px`;
+      status.textContent = "";
+      downloadButton.disabled = false;
+    }
+
+    function loadFile(file) {
+      if (!file || !file.type.startsWith("image/")) {
+        status.textContent = "이미지 파일을 선택해 주세요.";
+        return;
+      }
+
+      const image = new Image();
+      const objectUrl = URL.createObjectURL(file);
+      image.onload = () => {
+        if (sourceImage && sourceImage.src.startsWith("blob:")) {
+          URL.revokeObjectURL(sourceImage.src);
+        }
+        sourceImage = image;
+        sourceName = file.name.replace(/\.[^.]+$/, "") || "image";
+        extractedColor = averageEdgeColor(image);
+        if (autoColor.checked) {
+          borderColor.value = extractedColor;
+        }
+        if (autoShadowColor.checked) shadowColor.value = contrastingColor(borderColor.value);
+        render();
+        status.textContent = `가장자리에서 테두리 색 ${borderColor.value}을 추출하고 대비 음영 색 ${shadowColor.value}을 적용했습니다.`;
+      };
+      image.onerror = () => {
+        URL.revokeObjectURL(objectUrl);
+        status.textContent = "이미지를 읽지 못했습니다. 다른 파일을 선택해 주세요.";
+      };
+      image.src = objectUrl;
+    }
+
+    settings.forEach(([inputId, valueId, unit]) => {
+      const input = document.getElementById(inputId);
+      const value = document.getElementById(valueId);
+      const update = () => {
+        value.textContent = `${input.value}${unit}`;
+        render();
+      };
+      input.addEventListener("input", update);
+      update();
+    });
+
+    fileInput.addEventListener("change", () => loadFile(fileInput.files[0]));
+    borderColor.addEventListener("input", () => {
+      if (autoShadowColor.checked) shadowColor.value = contrastingColor(borderColor.value);
+      render();
+    });
+    shadowColor.addEventListener("input", () => {
+      autoShadowColor.checked = false;
+      render();
+    });
+    autoShadowColor.addEventListener("change", () => {
+      if (autoShadowColor.checked) shadowColor.value = contrastingColor(borderColor.value);
+      render();
+    });
+    autoColor.addEventListener("change", () => {
+      if (autoColor.checked) {
+        borderColor.value = extractedColor;
+        if (autoShadowColor.checked) shadowColor.value = contrastingColor(borderColor.value);
+        render();
+      }
+    });
+
+    downloadButton.addEventListener("click", () => {
+      outputCanvas.toBlob(blob => {
+        if (!blob) {
+          status.textContent = "PNG 파일을 만들지 못했습니다. 이미지 크기를 확인해 주세요.";
+          return;
+        }
+        const link = document.createElement("a");
+        const url = URL.createObjectURL(blob);
+        link.href = url;
+        link.download = `${sourceName}-framed.png`;
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        status.textContent = "새 PNG 이미지를 저장했습니다.";
+      }, "image/png");
+    });
+
+    ["dragenter", "dragover"].forEach(eventName => {
+      dropZone.addEventListener(eventName, event => {
+        event.preventDefault();
+        dropZone.classList.add("active");
+      });
+    });
+    ["dragleave", "drop"].forEach(eventName => {
+      dropZone.addEventListener(eventName, event => {
+        event.preventDefault();
+        dropZone.classList.remove("active");
+      });
+    });
+    dropZone.addEventListener("drop", event => loadFile(event.dataTransfer.files[0]));
+  </script>
+</body>
+</html>

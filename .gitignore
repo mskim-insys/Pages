@@ -11,5 +11,5 @@ Desktop.ini
 *.log
 *.tmp
 
-# Docs
-docs/*
+# Archive
+archive/
