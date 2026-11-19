@@ -248,6 +248,9 @@
           <label><input id="autoShadowColor" type="checkbox" checked> 테두리 대비색 자동</label>
         </span>
       </div>
+      <div class="control">
+        <label title="자동 색상 선택이 켜진 효과에만 적용되며, 수동 색상은 우선합니다."><input id="gradientEffect" type="checkbox"> 가장자리별 그라데이션 테두리·음영 (자동 색상 사용 시)</label>
+      </div>
     </section>
 
     <div class="preview-header">
@@ -267,7 +270,7 @@
     const fileInput = document.getElementById("fileInput");
     const dropZone = document.getElementById("dropZone");
     const outputCanvas = document.getElementById("outputCanvas");
-    const context = outputCanvas.getContext("2d");
+    const context = outputCanvas.getContext("2d", { willReadFrequently: true });
     const downloadButton = document.getElementById("downloadButton");
     const imageInfo = document.getElementById("imageInfo");
     const status = document.getElementById("status");
@@ -275,6 +278,7 @@
     const shadowColor = document.getElementById("shadowColor");
     const autoColor = document.getElementById("autoColor");
     const autoShadowColor = document.getElementById("autoShadowColor");
+    const gradientEffect = document.getElementById("gradientEffect");
     const settings = [
       ["borderWidth", "borderWidthValue", "px"],
       ["shadowBlur", "shadowBlurValue", "px"],
@@ -323,6 +327,201 @@
       return "#" + sum.map(value => Math.round(value / count).toString(16).padStart(2, "0")).join("");
     }
 
+    function rgbFromHex(color) {
+      return color.match(/[0-9a-f]{2}/gi).map(value => parseInt(value, 16));
+    }
+
+    function hexFromRgb(color) {
+      return "#" + color.map(value => value.toString(16).padStart(2, "0")).join("");
+    }
+
+    function sampleEdgeLine(image, sourceX, sourceY, sourceWidth, sourceHeight, horizontal, fromEnd, fallback) {
+      const sampleCanvas = document.createElement("canvas");
+      sampleCanvas.width = sourceWidth;
+      sampleCanvas.height = sourceHeight;
+      const sampleContext = sampleCanvas.getContext("2d", { willReadFrequently: true });
+      sampleContext.drawImage(
+        image, sourceX, sourceY, sourceWidth, sourceHeight,
+        0, 0, sourceWidth, sourceHeight
+      );
+      const pixels = sampleContext.getImageData(0, 0, sourceWidth, sourceHeight).data;
+      const length = horizontal ? sourceWidth : sourceHeight;
+      const depth = horizontal ? sourceHeight : sourceWidth;
+      const fallbackRgb = rgbFromHex(fallback);
+
+      return Array.from({ length }, (_, index) => {
+        for (let distance = 0; distance < depth; distance++) {
+          const sampleDepth = fromEnd ? depth - distance - 1 : distance;
+          const pixelIndex = horizontal
+            ? (sampleDepth * sourceWidth + index) * 4
+            : (index * sourceWidth + sampleDepth) * 4;
+          if (pixels[pixelIndex + 3] >= 32) {
+            return [pixels[pixelIndex], pixels[pixelIndex + 1], pixels[pixelIndex + 2]];
+          }
+        }
+        return fallbackRgb;
+      });
+    }
+
+    function edgeColorLines(image, fallback) {
+      const width = image.naturalWidth;
+      const height = image.naturalHeight;
+      const bandHeight = Math.min(64, height);
+      const bandWidth = Math.min(64, width);
+      const lines = {
+        top: sampleEdgeLine(image, 0, 0, width, bandHeight, true, false, fallback),
+        bottom: sampleEdgeLine(image, 0, height - bandHeight, width, bandHeight, true, true, fallback),
+        left: sampleEdgeLine(image, 0, 0, bandWidth, height, false, false, fallback),
+        right: sampleEdgeLine(image, width - bandWidth, 0, bandWidth, height, false, true, fallback)
+      };
+      const cornerCanvas = document.createElement("canvas");
+      cornerCanvas.width = 4;
+      cornerCanvas.height = 1;
+      const cornerContext = cornerCanvas.getContext("2d", { willReadFrequently: true });
+      const coordinates = [[0, 0], [width - 1, 0], [0, height - 1], [width - 1, height - 1]];
+      coordinates.forEach(([x, y], index) => {
+        cornerContext.drawImage(image, x, y, 1, 1, index, 0, 1, 1);
+      });
+      const cornerPixels = cornerContext.getImageData(0, 0, 4, 1).data;
+      const corners = [
+        [0, 0, [[lines.top, 0], [lines.left, 0]]],
+        [width - 1, 0, [[lines.top, width - 1], [lines.right, 0]]],
+        [0, height - 1, [[lines.bottom, 0], [lines.left, height - 1]]],
+        [width - 1, height - 1, [[lines.bottom, width - 1], [lines.right, height - 1]]]
+      ];
+      const cornerGroups = new Map();
+      corners.forEach(([x, y, endpoints], index) => {
+        const key = `${x},${y}`;
+        if (!cornerGroups.has(key)) {
+          cornerGroups.set(key, { alpha: cornerPixels[index * 4 + 3], endpoints: [] });
+        }
+        cornerGroups.get(key).endpoints.push(...endpoints);
+      });
+      cornerGroups.forEach(({ alpha, endpoints }) => {
+        if (alpha >= 32) return;
+        const color = [0, 1, 2].map(channel =>
+          Math.round(endpoints.reduce((sum, [line, index]) => sum + line[index][channel], 0) / endpoints.length)
+        );
+        endpoints.forEach(([line, index]) => {
+          line[index] = color;
+        });
+      });
+      return lines;
+    }
+
+    function lineCanvas(colors, horizontal) {
+      const lineCanvas = document.createElement("canvas");
+      lineCanvas.width = horizontal ? colors.length : 1;
+      lineCanvas.height = horizontal ? 1 : colors.length;
+      const lineContext = lineCanvas.getContext("2d");
+      const line = lineContext.createImageData(lineCanvas.width, lineCanvas.height);
+      colors.forEach((color, index) => {
+        const pixelIndex = index * 4;
+        line.data[pixelIndex] = color[0];
+        line.data[pixelIndex + 1] = color[1];
+        line.data[pixelIndex + 2] = color[2];
+        line.data[pixelIndex + 3] = 255;
+      });
+      lineContext.putImageData(line, 0, 0);
+      return lineCanvas;
+    }
+
+    function drawGradientBorder(x, y, width, height, border, lines) {
+      const topLine = lineCanvas(lines.top, true);
+      const bottomLine = lineCanvas(lines.bottom, true);
+      const leftLine = lineCanvas(lines.left, false);
+      const rightLine = lineCanvas(lines.right, false);
+      const outerX = x - border;
+      const outerY = y - border;
+
+      context.drawImage(topLine, x, outerY, width, border);
+      context.drawImage(bottomLine, x, y + height, width, border);
+      context.drawImage(leftLine, outerX, y, border, height);
+      context.drawImage(rightLine, x + width, y, border, height);
+
+      context.fillStyle = hexFromRgb(lines.top[0]);
+      context.fillRect(outerX, outerY, border, border);
+      context.fillStyle = hexFromRgb(lines.top[width - 1]);
+      context.fillRect(x + width, outerY, border, border);
+      context.fillStyle = hexFromRgb(lines.bottom[0]);
+      context.fillRect(outerX, y + height, border, border);
+      context.fillStyle = hexFromRgb(lines.bottom[width - 1]);
+      context.fillRect(x + width, y + height, border, border);
+    }
+
+    function gradientColorAt(x, y, imageX, imageY, width, height, lines) {
+      const sourceX = Math.max(0, Math.min(width - 1, x - imageX));
+      const sourceY = Math.max(0, Math.min(height - 1, y - imageY));
+      if (y < imageY) return lines.top[sourceX];
+      if (y >= imageY + height) return lines.bottom[sourceX];
+      if (x < imageX) return lines.left[sourceY];
+      if (x >= imageX + width) return lines.right[sourceY];
+
+      const distances = [
+        [y - imageY, lines.top[sourceX]],
+        [imageY + height - 1 - y, lines.bottom[sourceX]],
+        [x - imageX, lines.left[sourceY]],
+        [imageX + width - 1 - x, lines.right[sourceY]]
+      ];
+      return distances.reduce((nearest, current) => current[0] < nearest[0] ? current : nearest)[1];
+    }
+
+    function colorizeGradientShadow(imageX, imageY, width, height, border, blur, lines) {
+      const shadowLines = Object.fromEntries(
+        Object.entries(lines).map(([side, colors]) => [
+          side,
+          colors.map(color => rgbFromHex(contrastingColor(hexFromRgb(color))))
+        ])
+      );
+      const outerX = imageX - border;
+      const outerY = imageY - border;
+      const outerRight = imageX + width + border;
+      const outerBottom = imageY + height + border;
+      const reach = Math.max(2, Math.ceil(blur * 3) + 2);
+
+      function colorize(left, top, regionWidth, regionHeight) {
+        if (regionWidth <= 0 || regionHeight <= 0) return;
+        const firstRow = Math.max(0, top);
+        const lastRow = Math.min(outputCanvas.height, top + regionHeight);
+        const firstColumn = Math.max(0, left);
+        const lastColumn = Math.min(outputCanvas.width, left + regionWidth);
+        for (let row = firstRow; row < lastRow; row += 64) {
+          const rows = Math.min(64, lastRow - row);
+          const pixels = context.getImageData(firstColumn, row, lastColumn - firstColumn, rows);
+          for (let yOffset = 0; yOffset < rows; yOffset++) {
+            for (let xOffset = 0; xOffset < pixels.width; xOffset++) {
+              const pixelIndex = (yOffset * pixels.width + xOffset) * 4;
+              if (!pixels.data[pixelIndex + 3]) continue;
+              const gradient = gradientColorAt(
+                firstColumn + xOffset,
+                row + yOffset,
+                imageX,
+                imageY,
+                width,
+                height,
+                shadowLines
+              );
+              pixels.data[pixelIndex] = gradient[0];
+              pixels.data[pixelIndex + 1] = gradient[1];
+              pixels.data[pixelIndex + 2] = gradient[2];
+            }
+          }
+          context.putImageData(pixels, firstColumn, row);
+        }
+      }
+
+      const topStart = outerY - reach;
+      const topEnd = imageY + reach;
+      const bottomStart = imageY + height - reach;
+      const bottomEnd = outerBottom + reach;
+      colorize(0, topStart, outputCanvas.width, topEnd - topStart);
+      colorize(0, bottomStart, outputCanvas.width, bottomEnd - bottomStart);
+      if (topEnd < bottomStart) {
+        colorize(outerX - reach, topEnd, imageX + reach - (outerX - reach), bottomStart - topEnd);
+        colorize(imageX + width - reach, topEnd, outerRight + reach - (imageX + width - reach), bottomStart - topEnd);
+      }
+    }
+
     function render() {
       if (!sourceImage) return;
       const border = Number(document.getElementById("borderWidth").value);
@@ -333,6 +532,8 @@
       const padding = shadowPadding + border;
       const width = Math.ceil(sourceImage.naturalWidth + padding * 2);
       const height = Math.ceil(sourceImage.naturalHeight + padding * 2 + offset);
+      const useGradientBorder = gradientEffect.checked && autoColor.checked;
+      const useGradientShadow = useGradientBorder && autoShadowColor.checked;
 
       if (width > 16384 || height > 16384 || width * height > 100000000) {
         status.textContent = "이미지가 너무 커서 처리할 수 없습니다. 크기를 줄인 뒤 다시 시도해 주세요.";
@@ -346,18 +547,50 @@
 
       const x = padding;
       const y = padding;
-      context.save();
-      context.shadowColor = `rgba(${shadowColor.value.match(/[0-9a-f]{2}/gi).map(value => parseInt(value, 16)).join(", ")}, ${opacity})`;
-      context.shadowBlur = blur;
-      context.shadowOffsetX = 0;
-      context.shadowOffsetY = offset;
-      context.drawImage(sourceImage, x, y);
-      context.restore();
+      let lines = null;
+      if (useGradientBorder || useGradientShadow) {
+        lines = edgeColorLines(sourceImage, borderColor.value);
+      }
+
+      if (useGradientShadow) {
+        context.save();
+        context.shadowColor = `rgba(255, 255, 255, ${opacity})`;
+        context.shadowBlur = blur;
+        context.shadowOffsetX = 0;
+        context.shadowOffsetY = offset;
+        if (border > 0) {
+          context.fillStyle = "#fff";
+          context.beginPath();
+          context.rect(x - border, y - border, sourceImage.naturalWidth + border * 2, sourceImage.naturalHeight + border * 2);
+          context.rect(x, y, sourceImage.naturalWidth, sourceImage.naturalHeight);
+          context.fill("evenodd");
+        } else {
+          context.drawImage(sourceImage, x, y);
+        }
+        context.restore();
+        colorizeGradientShadow(x, y + offset, sourceImage.naturalWidth, sourceImage.naturalHeight, border, blur, lines);
+      } else {
+        context.save();
+        context.shadowColor = `rgba(${shadowColor.value.match(/[0-9a-f]{2}/gi).map(value => parseInt(value, 16)).join(", ")}, ${opacity})`;
+        context.shadowBlur = blur;
+        context.shadowOffsetX = 0;
+        context.shadowOffsetY = offset;
+        context.drawImage(sourceImage, x, y);
+        context.restore();
+      }
 
       if (border > 0) {
-        context.strokeStyle = borderColor.value;
-        context.lineWidth = border;
-        context.strokeRect(x, y, sourceImage.naturalWidth, sourceImage.naturalHeight);
+        if (useGradientBorder) {
+          drawGradientBorder(x, y, sourceImage.naturalWidth, sourceImage.naturalHeight, border, lines);
+        } else {
+          context.strokeStyle = borderColor.value;
+          context.lineWidth = border;
+          context.strokeRect(x, y, sourceImage.naturalWidth, sourceImage.naturalHeight);
+        }
+      }
+
+      if (useGradientShadow) {
+        context.drawImage(sourceImage, x, y);
       }
 
       imageInfo.textContent = `${sourceImage.naturalWidth} × ${sourceImage.naturalHeight}px → ${width} × ${height}px`;
@@ -422,9 +655,10 @@
       if (autoColor.checked) {
         borderColor.value = extractedColor;
         if (autoShadowColor.checked) shadowColor.value = contrastingColor(borderColor.value);
-        render();
       }
+      render();
     });
+    gradientEffect.addEventListener("change", render);
 
     downloadButton.addEventListener("click", () => {
       outputCanvas.toBlob(blob => {
