@@ -251,6 +251,9 @@
       <div class="control">
         <label title="자동 색상 선택이 켜진 효과에만 적용되며, 수동 색상은 우선합니다."><input id="gradientEffect" type="checkbox"> 가장자리별 그라데이션 테두리·음영 (자동 색상 사용 시)</label>
       </div>
+      <div class="control">
+        <label title="자동 그라데이션 음영에만 적용됩니다. 수동 색상은 우선합니다."><input id="grayscaleShadow" type="checkbox" disabled> 그라데이션 음영 회색조</label>
+      </div>
     </section>
 
     <div class="preview-header">
@@ -279,6 +282,7 @@
     const autoColor = document.getElementById("autoColor");
     const autoShadowColor = document.getElementById("autoShadowColor");
     const gradientEffect = document.getElementById("gradientEffect");
+    const grayscaleShadow = document.getElementById("grayscaleShadow");
     const settings = [
       ["borderWidth", "borderWidthValue", "px"],
       ["shadowBlur", "shadowBlurValue", "px"],
@@ -449,30 +453,59 @@
       context.fillRect(x + width, y + height, border, border);
     }
 
-    function gradientColorAt(x, y, imageX, imageY, width, height, lines) {
+    function shadowEdgeLines(lines, grayscale) {
+      return Object.fromEntries(Object.entries(lines).map(([side, edge]) => {
+        const colors = edge.map(color => {
+          const luminance = color.reduce((sum, channel, index) => sum + channel * [0.2126, 0.7152, 0.0722][index], 0);
+          // Darken while gently lifting very dark colors, without a brightness cutoff.
+          const lift = 48 * (1 - luminance / 255);
+          const shadow = color.map(channel => channel * 0.5 + lift);
+          if (!grayscale) return shadow;
+          const gray = shadow.reduce((sum, channel, index) => sum + channel * [0.2126, 0.7152, 0.0722][index], 0);
+          return [gray, gray, gray];
+        });
+        const radius = 8;
+        const at = index => colors[Math.max(0, Math.min(colors.length - 1, index))];
+        const totals = [0, 0, 0];
+        for (let i = -radius; i <= radius; i++) {
+          for (let channel = 0; channel < 3; channel++) totals[channel] += at(i)[channel];
+        }
+        const smoothed = colors.map((_, index) => {
+          const color = totals.map(total => Math.round(total / (radius * 2 + 1)));
+          for (let channel = 0; channel < 3; channel++) {
+            totals[channel] += at(index + radius + 1)[channel] - at(index - radius)[channel];
+          }
+          return color;
+        });
+        return [side, smoothed];
+      }));
+    }
+
+    function shadowGradientColorAt(x, y, imageX, imageY, width, height, lines) {
       const sourceX = Math.max(0, Math.min(width - 1, x - imageX));
       const sourceY = Math.max(0, Math.min(height - 1, y - imageY));
-      if (y < imageY) return lines.top[sourceX];
-      if (y >= imageY + height) return lines.bottom[sourceX];
-      if (x < imageX) return lines.left[sourceY];
-      if (x >= imageX + width) return lines.right[sourceY];
-
+      const right = imageX + width - 1;
+      const bottom = imageY + height - 1;
+      const outsideX = Math.max(imageX - x, 0, x - right);
+      const outsideY = Math.max(imageY - y, 0, y - bottom);
       const distances = [
-        [y - imageY, lines.top[sourceX]],
-        [imageY + height - 1 - y, lines.bottom[sourceX]],
-        [x - imageX, lines.left[sourceY]],
-        [imageX + width - 1 - x, lines.right[sourceY]]
+        Math.abs(y - imageY) + outsideX,
+        Math.abs(y - bottom) + outsideX,
+        Math.abs(x - imageX) + outsideY,
+        Math.abs(x - right) + outsideY
       ];
-      return distances.reduce((nearest, current) => current[0] < nearest[0] ? current : nearest)[1];
+      const nearest = Math.min(...distances);
+      // Blend nearby sides to avoid seams where the nearest edge changes.
+      const weights = distances.map(distance => Math.max(0, 12 - (distance - nearest)));
+      const colors = [lines.top[sourceX], lines.bottom[sourceX], lines.left[sourceY], lines.right[sourceY]];
+      const total = weights.reduce((sum, weight) => sum + weight, 0);
+      return [0, 1, 2].map(channel =>
+        Math.round(colors.reduce((sum, color, index) => sum + color[channel] * weights[index], 0) / total)
+      );
     }
 
     function colorizeGradientShadow(imageX, imageY, width, height, border, blur, lines) {
-      const shadowLines = Object.fromEntries(
-        Object.entries(lines).map(([side, colors]) => [
-          side,
-          colors.map(color => rgbFromHex(contrastingColor(hexFromRgb(color))))
-        ])
-      );
+      const shadowLines = shadowEdgeLines(lines, grayscaleShadow.checked);
       const outerX = imageX - border;
       const outerY = imageY - border;
       const outerRight = imageX + width + border;
@@ -492,7 +525,7 @@
             for (let xOffset = 0; xOffset < pixels.width; xOffset++) {
               const pixelIndex = (yOffset * pixels.width + xOffset) * 4;
               if (!pixels.data[pixelIndex + 3]) continue;
-              const gradient = gradientColorAt(
+              const gradient = shadowGradientColorAt(
                 firstColumn + xOffset,
                 row + yOffset,
                 imageX,
@@ -514,15 +547,20 @@
       const topEnd = imageY + reach;
       const bottomStart = imageY + height - reach;
       const bottomEnd = outerBottom + reach;
-      colorize(0, topStart, outputCanvas.width, topEnd - topStart);
-      colorize(0, bottomStart, outputCanvas.width, bottomEnd - bottomStart);
-      if (topEnd < bottomStart) {
-        colorize(outerX - reach, topEnd, imageX + reach - (outerX - reach), bottomStart - topEnd);
-        colorize(imageX + width - reach, topEnd, outerRight + reach - (imageX + width - reach), bottomStart - topEnd);
+      if (!border) {
+        colorize(0, 0, outputCanvas.width, outputCanvas.height);
+      } else {
+        colorize(0, topStart, outputCanvas.width, topEnd - topStart);
+        colorize(0, bottomStart, outputCanvas.width, bottomEnd - bottomStart);
+        if (topEnd < bottomStart) {
+          colorize(outerX - reach, topEnd, imageX + reach - (outerX - reach), bottomStart - topEnd);
+          colorize(imageX + width - reach, topEnd, outerRight + reach - (imageX + width - reach), bottomStart - topEnd);
+        }
       }
     }
 
     function render() {
+      grayscaleShadow.disabled = !(gradientEffect.checked && autoColor.checked && autoShadowColor.checked);
       if (!sourceImage) return;
       const border = Number(document.getElementById("borderWidth").value);
       const blur = Number(document.getElementById("shadowBlur").value);
@@ -565,7 +603,9 @@
           context.rect(x, y, sourceImage.naturalWidth, sourceImage.naturalHeight);
           context.fill("evenodd");
         } else {
-          context.drawImage(sourceImage, x, y);
+          // Draw the source off-canvas so only its offset shadow enters the output.
+          context.shadowOffsetX = width;
+          context.drawImage(sourceImage, x - width, y);
         }
         context.restore();
         colorizeGradientShadow(x, y + offset, sourceImage.naturalWidth, sourceImage.naturalHeight, border, blur, lines);
@@ -618,7 +658,11 @@
         }
         if (autoShadowColor.checked) shadowColor.value = contrastingColor(borderColor.value);
         render();
-        status.textContent = `가장자리에서 테두리 색 ${borderColor.value}을 추출하고 대비 음영 색 ${shadowColor.value}을 적용했습니다.`;
+        if (!downloadButton.disabled) {
+          status.textContent = gradientEffect.checked && autoColor.checked && autoShadowColor.checked
+            ? `가장자리별 ${grayscaleShadow.checked ? "회색조" : "컬러"} 그라데이션 음영을 적용했습니다.`
+            : `테두리 색 ${borderColor.value}과 음영 색 ${shadowColor.value}을 적용했습니다.`;
+        }
       };
       image.onerror = () => {
         URL.revokeObjectURL(objectUrl);
@@ -659,6 +703,7 @@
       render();
     });
     gradientEffect.addEventListener("change", render);
+    grayscaleShadow.addEventListener("change", render);
 
     downloadButton.addEventListener("click", () => {
       outputCanvas.toBlob(blob => {
